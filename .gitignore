@@ -4,10 +4,11 @@
 # Dependencias Node (frontend)
 **/node_modules/
 
-# Variables de entorno con credenciales
-**/.env
-**/.env.local
-**/.env.*.local
+# Variables de entorno con credenciales (solo la raíz, los servicios sí se suben)
+.env
+.env.local
+*/.env.local
+*/.env.*.local
 
 # Archivos de caché de Laravel
 **/bootstrap/cache/*.php

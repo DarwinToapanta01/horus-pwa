@@ -19,7 +19,7 @@ services:
     image: postgres:15-alpine
     container_name: horus_auth_db
     ports:
-      - "5433:5432"
+      - "5437:5432"
     environment:
       POSTGRES_DB: horus_auth_db
       POSTGRES_USER: postgres

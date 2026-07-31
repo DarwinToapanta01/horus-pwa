@@ -129,13 +129,13 @@ const Comentarios = () => {
                             <div className="flex gap-3 mb-3">
                                 <div className="bg-emerald-500/10 border border-emerald-500/20 w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0">
                                     <span className="text-emerald-400 font-black text-sm">
-                                        {c.user.name.charAt(0).toUpperCase()}
+                                        {(c.user_name || 'U').charAt(0).toUpperCase()}
                                     </span>
                                 </div>
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center justify-between gap-2 mb-1">
                                         <span className="text-emerald-400 font-bold text-sm uppercase tracking-wide truncate">
-                                            {c.user.name}
+                                            {c.user_name || 'Usuario'}
                                         </span>
                                         <span className="text-[10px] text-slate-500 font-medium whitespace-nowrap">
                                             {new Date(c.created_at).toLocaleDateString('es-ES', {

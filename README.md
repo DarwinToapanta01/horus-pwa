@@ -1,15 +1,15 @@
 # HORUS - Plataforma de Vigilancia Ciudadana Colaborativa
 
-![Estado](https://img.shields.io/badge/Estado-Local%20%2F%20Docker-blue)
+![Estado](https://img.shields.io/badge/Estado-Local%20%2F%20Docker%20%2F%20Kubernetes-blue)
 ![Laravel](https://img.shields.io/badge/Laravel-12.0-red)
 ![React](https://img.shields.io/badge/React-19.0-blue)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED)
 ![PHP](https://img.shields.io/badge/PHP-8.3-777BB4)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Minikube-326CE5)
+![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-Jaeger%20%2F%20Prometheus%20%2F%20Grafana-000000)
 
 **HORUS** es una aplicación web de reportes ciudadanos geolocalizados que permite a los ciudadanos reportar, validar y comentar zonas de peligro en su ciudad mediante un sistema de verificación comunitaria basado en proximidad geográfica.
-
-El nombre hace referencia al dios egipcio Horus, conocido como "el ojo que todo lo ve", simbolizando la visión colectiva de la comunidad sobre su entorno urbano.
 
 ---
 
@@ -20,12 +20,12 @@ El nombre hace referencia al dios egipcio Horus, conocido como "el ojo que todo 
 - [Tecnologías](#tecnologías)
 - [Requisitos Previos](#requisitos-previos)
 - [Instalación y Ejecución Local](#instalación-y-ejecución-local)
+- [Despliegue en Kubernetes (Minikube)](#despliegue-en-kubernetes-minikube)
 - [Puertos del Sistema](#puertos-del-sistema)
 - [Variables de Entorno](#variables-de-entorno)
 - [Estructura del Proyecto](#estructura-del-proyecto)
 - [Endpoints de la API](#endpoints-de-la-api)
 - [Características Principales](#características-principales)
-- [Autor](#autor)
 
 ---
 
@@ -67,7 +67,7 @@ Frontend React (localhost:5173)
 | Servicio | Puerto | Base de Datos | Responsabilidad |
 |---|---|---|---|
 | **api-gateway** | 8000 | — | Enrutamiento, autenticación centralizada |
-| **auth-service** | 8001 | horus_auth_db (5433) | Usuarios, tokens Sanctum, recuperación de contraseña |
+| **auth-service** | 8001 | horus_auth_db (5437) | Usuarios, tokens Sanctum, recuperación de contraseña |
 | **reports-service** | 8002 | horus_reports_db (5434) | Reportes geolocalizados |
 | **votes-service** | 8003 | horus_votes_db (5435) | Votos con validación de distancia (Haversine) |
 | **comments-service** | 8004 | horus_comments_db (5436) | Comentarios anidados |
@@ -93,7 +93,11 @@ Frontend React (localhost:5173)
 
 ### Infraestructura
 - **Docker** — Contenedores para cada servicio
-- **Docker Compose** — Orquestación de los 9 contenedores
+- **Docker Compose** — Orquestación de los 9 contenedores (entorno local simple)
+- **Kubernetes (Minikube)** — Orquestación alternativa con Deployments, Services, ConfigMaps/Secrets, PVCs y NetworkPolicies
+- **OpenTelemetry** — Instrumentación zero-code (HTTP, PDO, Guzzle) exportando vía OTLP
+- **Jaeger** — Trazas distribuidas entre microservicios
+- **Prometheus + Grafana** — Métricas y dashboards
 - **GitHub** — Control de versiones
 
 ---
@@ -164,6 +168,157 @@ docker-compose down -v
 
 ---
 
+## Despliegue en Kubernetes (Minikube)
+
+Además de Docker Compose, HORUS puede desplegarse completo en un clúster de Kubernetes local (Minikube), con los 5 microservicios, las 4 bases de datos y un stack de observabilidad (**OpenTelemetry Collector + Jaeger + Prometheus + Grafana**) instrumentado de forma *zero-code* en cada servicio Laravel.
+
+### Requisitos adicionales
+
+- [Minikube](https://minikube.sigs.k8s.io/docs/start/)
+- `kubectl` (se instala junto con Docker Desktop o por separado)
+- Docker Desktop corriendo (Minikube usa su daemon como driver `docker`)
+
+### 1. Iniciar Minikube
+
+```powershell
+minikube start
+```
+
+### 2. Construir las imágenes dentro del daemon Docker de Minikube
+
+Minikube usa su **propio** daemon Docker, aislado del de Docker Desktop. Hay que apuntar la shell hacia él antes de construir las imágenes, para que los Deployments (que usan `imagePullPolicy: Never`) las encuentren localmente sin necesidad de un registry:
+
+```powershell
+minikube docker-env | Invoke-Expression
+
+docker build -t horus/auth-service:otel     ./auth-service
+docker build -t horus/reports-service:otel  ./reports-service
+docker build -t horus/votes-service:otel    ./votes-service
+docker build -t horus/comments-service:otel ./comments-service
+docker build -t horus/api-gateway:otel      ./api-gateway
+```
+
+> Cada Dockerfile instala la extensión PECL `opentelemetry` y los paquetes Composer `open-telemetry/sdk`, `open-telemetry/exporter-otlp` y los paquetes `opentelemetry-auto-*` (Laravel, Guzzle, PDO). Esto instrumenta HTTP, consultas SQL y llamadas salientes entre microservicios **sin tocar el código de la aplicación**, exportando trazas vía OTLP/HTTP al collector.
+
+### 3. Desplegar todos los manifiestos
+
+El script `k8s/deploy.ps1` aplica los recursos respetando el orden de dependencias (namespaces → secrets/configmaps → storage → deployments → services → networking → observabilidad):
+
+```powershell
+.\k8s\deploy.ps1
+```
+
+Verifica que todo quede en estado `Running`:
+
+```powershell
+kubectl get pods -n horus
+kubectl get pods -n observability
+```
+
+### 4. Exponer los servicios (port-forward)
+
+```powershell
+# Frontend -> API Gateway
+kubectl port-forward -n horus svc/api-gateway 8000:8000
+
+# Trazas distribuidas
+kubectl port-forward -n observability svc/jaeger 16686:16686
+
+# Métricas
+kubectl port-forward -n observability svc/prometheus 9090:9090
+
+# Dashboards
+kubectl port-forward -n observability svc/grafana 3000:3000
+```
+
+| Herramienta | URL | Credenciales |
+|---|---|---|
+| API Gateway | http://localhost:8000 | — |
+| Jaeger UI (trazas) | http://localhost:16686 | — |
+| Prometheus | http://localhost:9090 | — |
+| Grafana | http://localhost:3000 | `admin` / `admin` |
+
+En Jaeger, selecciona cualquiera de los 5 servicios (`api-gateway`, `auth-service`, `reports-service`, `votes-service`, `comments-service`) para ver trazas con spans anidados de HTTP, consultas PDO y llamadas Guzzle entre microservicios.
+
+### 5. Eliminar el despliegue
+
+```powershell
+.\k8s\destroy.ps1
+```
+
+Esto borra los namespaces `horus` y `observability` (y todo lo que contienen), pero **conserva los PersistentVolumes** (los datos de Postgres sobreviven) porque tienen `reclaimPolicy: Retain`. Para borrarlos también:
+
+```powershell
+.\k8s\destroy.ps1 -DeleteVolumes
+```
+
+### Notas de la migración a Kubernetes
+
+- Los manifiestos `Deployment` usan el tag `:otel` de cada imagen y variables `OTEL_*` inyectadas vía ConfigMap (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.observability.svc.cluster.local:4318`, etc.).
+- El `CMD` de cada Dockerfile ejecuta `php artisan serve --no-reload ...`. La bandera `--no-reload` es necesaria: sin ella, Laravel filtra el entorno del proceso que sirve las peticiones HTTP a una lista blanca fija (ver `ServeCommand::$passthroughVariables`) cuando detecta un `.env` en el proyecto, descartando `DB_HOST`, `DB_PASSWORD` y el resto de variables inyectadas por Kubernetes.
+
+### Guía Rápida: Encender, Verificar y Apagar (para la exposición)
+
+Antes que nada, entender **quién es quién**, porque es justo lo que suele preguntar el docente:
+
+- **Docker Desktop** — el motor de contenedores de tu PC. No corre Kubernetes directamente; solo hospeda contenedores.
+- **Minikube** — tu clúster de Kubernetes de un solo nodo. En realidad **es un contenedor Docker** (se ve como `minikube` en `docker ps`), que por dentro simula un servidor completo de Kubernetes.
+- **kubectl** — el comando con el que le hablas al clúster (desplegar, listar, borrar recursos).
+- Los 9 pods de HORUS (5 microservicios + 4 BDs) y los 4 de observabilidad corren **dentro** de Minikube, no como contenedores sueltos de Docker Desktop.
+
+> Por eso: **el clúster no se apaga desde la interfaz gráfica de Docker Desktop** (ahí solo verías el contenedor `minikube` corriendo, sin control sobre lo que hay adentro). Se apaga con comandos de `minikube`/`kubectl`.
+
+#### Encender todo (orden recomendado)
+
+```powershell
+# 1. Abrir Docker Desktop y esperar a que el ícono quede estable (GUI)
+
+# 2. Encender el clúster (si ya existía, lo reanuda tal cual quedó)
+minikube start
+
+# 3. Solo si cambiaste código de algún servicio, reconstruir su imagen:
+minikube docker-env | Invoke-Expression
+docker build -t horus/auth-service:otel ./auth-service   # repetir por servicio si aplica
+
+# 4. Aplicar los manifiestos (es seguro repetirlo, no rompe nada si ya estaba desplegado)
+.\k8s\deploy.ps1
+
+# 5. Exponer los servicios (cada uno en su propia terminal, deben quedar abiertas)
+kubectl port-forward -n horus svc/api-gateway 8080:8000
+kubectl port-forward -n observability svc/jaeger 16686:16686
+kubectl port-forward -n observability svc/grafana 3000:3000
+kubectl port-forward -n observability svc/prometheus 9090:9090
+
+# 6. Frontend (otra terminal más)
+cd horus-client
+npm run dev
+```
+
+#### Verificar que está corriendo (si el docente pregunta "¿está activo?")
+
+```powershell
+minikube status              # Estado del clúster
+kubectl get pods -n horus    # Los 9 pods de la aplicación
+kubectl get pods -n observability   # Los 4 pods de telemetría
+kubectl get all -n horus     # Deployments + Services + Pods juntos
+```
+
+Todos los pods deben mostrar `Running` en la columna `STATUS`.
+
+#### Apagar (de más suave a más destructivo)
+
+| Quiero... | Comando | Qué pasa |
+|---|---|---|
+| Cerrar solo las ventanas de demo entre pruebas | `Ctrl+C` en cada `port-forward` y en `npm run dev` | El clúster sigue corriendo en segundo plano, no pierdes nada |
+| **Apagar el clúster** (respuesta correcta si piden "apaga el clúster") | `minikube stop` | Detiene todos los pods pero conserva el estado en disco; `minikube start` lo devuelve exactamente igual, sin repetir `deploy.ps1` |
+| Reiniciar solo la app, sin apagar Minikube | `.\k8s\destroy.ps1` | Borra los namespaces `horus` y `observability` (y todo lo que contienen); Minikube sigue encendido |
+| Borrar el clúster por completo | `minikube delete` | Elimina Minikube entero; hay que volver a `minikube start` + build + `deploy.ps1` desde cero |
+| Apagar Docker Desktop | Cerrar la app | Apaga TODO de golpe (incluye Minikube y cualquier otro contenedor tuyo, como un stack de Docker Compose que tengas activo aparte) — no es necesario para apagar solo el clúster |
+
+**Respuesta corta para el docente:** *"El clúster se apaga con `minikube stop`, no desde Docker Desktop. Docker Desktop es solo el motor que hospeda el contenedor de Minikube; `minikube stop` apaga el clúster de Kubernetes completo (todos los pods) mientras conserva su estado, y `minikube start` lo reanuda tal como estaba."*
+
+---
+
 ## Puertos del Sistema
 
 | Servicio | URL local | Descripción |
@@ -174,7 +329,7 @@ docker-compose down -v
 | reports-service | http://localhost:8002 | (directo, solo desarrollo) |
 | votes-service | http://localhost:8003 | (directo, solo desarrollo) |
 | comments-service | http://localhost:8004 | (directo, solo desarrollo) |
-| horus_auth_db | localhost:5433 | PostgreSQL — usuarios |
+| horus_auth_db | localhost:5437 | PostgreSQL — usuarios |
 | horus_reports_db | localhost:5434 | PostgreSQL — reportes |
 | horus_votes_db | localhost:5435 | PostgreSQL — votos |
 | horus_comments_db | localhost:5436 | PostgreSQL — comentarios |
@@ -227,6 +382,15 @@ horus-project/
 │
 ├── docker-compose.yml          ← orquesta los 9 contenedores
 ├── .gitignore
+│
+├── k8s/                         ← manifiestos de Kubernetes (alternativa a Docker Compose)
+│   ├── namespaces/, configmaps/, secrets/
+│   ├── persistent-volumes(-claims)/  ← almacenamiento de las 4 BDs
+│   ├── deployments/, services/       ← los 5 microservicios + las 4 BDs
+│   ├── network-policies/, ingress/
+│   ├── otel/                         ← OTel Collector + Jaeger
+│   ├── monitoring/                   ← Prometheus + Grafana
+│   └── deploy.ps1 / destroy.ps1
 │
 ├── api-gateway/                ← Puerto 8000 — entrada única
 │   ├── app/Http/Controllers/Api/GatewayController.php
